@@ -1492,7 +1492,8 @@ class BaseQuerySet(object):
         """Property that returns the collection object. This allows us to
         perform operations only if the collection is accessed.
         """
-        return self._collection_obj
+        # return self._collection_obj
+        return self._document._get_collection()
 
     @property
     def _cursor_args(self):

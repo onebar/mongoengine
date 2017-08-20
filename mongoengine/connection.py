@@ -1,3 +1,5 @@
+from copy import copy
+from threading import local
 from pymongo import MongoClient, ReadPreference, uri_parser
 import six
 
@@ -23,9 +25,17 @@ class MongoEngineConnectionError(Exception):
     pass
 
 
-_connection_settings = {}
-_connections = {}
-_dbs = {}
+_local_storage = local()
+_global_connections = {}
+_global_connection_settings = {}
+
+
+def local_storage():
+    if not hasattr(_local_storage, 'dbs'):
+        _local_storage.connections = copy(_global_connections)
+        _local_storage.connection_settings = copy(_global_connection_settings)
+        _local_storage.dbs = {}
+    return _local_storage
 
 
 def register_connection(alias, name=None, host=None, port=None,
@@ -80,8 +90,11 @@ def register_connection(alias, name=None, host=None, port=None,
         # Handle Mongomock
         if entity.startswith('mongomock://'):
             conn_settings['is_mock'] = True
-            # `mongomock://` is not a valid url prefix and must be replaced by `mongodb://`
-            resolved_hosts.append(entity.replace('mongomock://', 'mongodb://', 1))
+            resolved_hosts.append(
+                entity.replace(
+                    'mongomock://',
+                    'mongodb://',
+                    1))
 
         # Handle URI style connections, only updating connection params which
         # were explicitly specified in the URI.
@@ -100,9 +113,11 @@ def register_connection(alias, name=None, host=None, port=None,
             if 'replicaset' in uri_options:
                 conn_settings['replicaSet'] = uri_options['replicaset']
             if 'authsource' in uri_options:
-                conn_settings['authentication_source'] = uri_options['authsource']
+                conn_settings['authentication_source'] = \
+                    uri_options['authsource']
             if 'authmechanism' in uri_options:
-                conn_settings['authentication_mechanism'] = uri_options['authmechanism']
+                conn_settings['authentication_mechanism'] = \
+                    uri_options['authmechanism']
         else:
             resolved_hosts.append(entity)
     conn_settings['host'] = resolved_hosts
@@ -112,16 +127,16 @@ def register_connection(alias, name=None, host=None, port=None,
     kwargs.pop('is_slave', None)
 
     conn_settings.update(kwargs)
-    _connection_settings[alias] = conn_settings
+    local_storage().connection_settings[alias] = conn_settings
 
 
 def disconnect(alias=DEFAULT_CONNECTION_NAME):
     """Close the connection with a given alias."""
-    if alias in _connections:
+    if alias in local_storage().connections:
         get_connection(alias=alias).close()
-        del _connections[alias]
-    if alias in _dbs:
-        del _dbs[alias]
+        del local_storage().connections[alias]
+    if alias in local_storage().dbs:
+        del local_storage().dbs[alias]
 
 
 def get_connection(alias=DEFAULT_CONNECTION_NAME, reconnect=False):
@@ -133,12 +148,12 @@ def get_connection(alias=DEFAULT_CONNECTION_NAME, reconnect=False):
 
     # If the requested alias already exists in the _connections list, return
     # it immediately.
-    if alias in _connections:
-        return _connections[alias]
+    if alias in local_storage().connections:
+        return local_storage().connections[alias]
 
     # Validate that the requested alias exists in the _connection_settings.
     # Raise MongoEngineConnectionError if it doesn't.
-    if alias not in _connection_settings:
+    if alias not in local_storage().connection_settings:
         if alias == DEFAULT_CONNECTION_NAME:
             msg = 'You have not defined a default connection'
         else:
@@ -159,7 +174,9 @@ def get_connection(alias=DEFAULT_CONNECTION_NAME, reconnect=False):
     # Retrieve a copy of the connection settings associated with the requested
     # alias and remove the database name and authentication info (we don't
     # care about them at this point).
-    conn_settings = _clean_settings(_connection_settings[alias].copy())
+    conn_settings = _clean_settings(
+        local_storage().connection_settings[alias].copy()
+    )
 
     # Determine if we should use PyMongo's or mongomock's MongoClient.
     is_mock = conn_settings.pop('is_mock', False)
@@ -195,46 +212,56 @@ def get_connection(alias=DEFAULT_CONNECTION_NAME, reconnect=False):
     existing_connection = None
     connection_settings_iterator = (
         (db_alias, settings.copy())
-        for db_alias, settings in _connection_settings.items()
+        for db_alias, settings in local_storage().connection_settings.items()
     )
     for db_alias, connection_settings in connection_settings_iterator:
         connection_settings = _clean_settings(connection_settings)
-        if conn_settings == connection_settings and _connections.get(db_alias):
-            existing_connection = _connections[db_alias]
+        if conn_settings == connection_settings and \
+                local_storage().connections.get(db_alias):
+            existing_connection = local_storage().connections[db_alias]
             break
 
     # If an existing connection was found, assign it to the new alias
     if existing_connection:
-        _connections[alias] = existing_connection
+        local_storage().connections[alias] = existing_connection
     else:
         # Otherwise, create the new connection for this alias. Raise
         # MongoEngineConnectionError if it can't be established.
         try:
-            _connections[alias] = connection_class(**conn_settings)
+            local_storage().connections[alias] = \
+                connection_class(**conn_settings)
         except Exception as e:
             raise MongoEngineConnectionError(
                 'Cannot connect to database %s :\n%s' % (alias, e))
 
-    return _connections[alias]
+    if alias == DEFAULT_CONNECTION_NAME:
+        _global_connections[alias] = local_storage().connections[alias]
+        _global_connection_settings[alias] = \
+            local_storage().connection_settings[alias]
+    return local_storage().connections[alias]
 
 
 def get_db(alias=DEFAULT_CONNECTION_NAME, reconnect=False):
     if reconnect:
         disconnect(alias)
 
-    if alias not in _dbs:
+    if alias not in local_storage().dbs:
         conn = get_connection(alias)
-        conn_settings = _connection_settings[alias]
+        conn_settings = local_storage().connection_settings[alias]
         db = conn[conn_settings['name']]
         auth_kwargs = {'source': conn_settings['authentication_source']}
         if conn_settings['authentication_mechanism'] is not None:
             auth_kwargs['mechanism'] = conn_settings['authentication_mechanism']
         # Authenticate if necessary
-        if conn_settings['username'] and (conn_settings['password'] or
-                                          conn_settings['authentication_mechanism'] == 'MONGODB-X509'):
-            db.authenticate(conn_settings['username'], conn_settings['password'], **auth_kwargs)
-        _dbs[alias] = db
-    return _dbs[alias]
+        if conn_settings['username'] and(
+                conn_settings['password']
+                or conn_settings['authentication_mechanism'] == 'MONGODB-X509'):
+            db.authenticate(
+                conn_settings['username'],
+                conn_settings['password'],
+                **auth_kwargs)
+        local_storage().dbs[alias] = db
+    return local_storage().dbs[alias]
 
 
 def connect(db=None, alias=DEFAULT_CONNECTION_NAME, **kwargs):
@@ -252,12 +279,8 @@ def connect(db=None, alias=DEFAULT_CONNECTION_NAME, **kwargs):
 
     .. versionchanged:: 0.6 - added multiple database support.
     """
-    if alias not in _connections:
+    if alias not in local_storage().connections:
         register_connection(alias, db, **kwargs)
 
-    return get_connection(alias)
-
-
-# Support old naming convention
-_get_connection = get_connection
-_get_db = get_db
+    connection = get_connection(alias)
+    return connection
