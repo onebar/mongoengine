@@ -1,3 +1,4 @@
+import logging
 from mongoengine.errors import OperationError
 from mongoengine.queryset.base import (BaseQuerySet, CASCADE, DENY, DO_NOTHING,
                                        NULLIFY, PULL)
@@ -8,6 +9,8 @@ __all__ = ('QuerySet', 'QuerySetNoCache', 'DO_NOTHING', 'NULLIFY', 'CASCADE',
 # The maximum number of items to display in a QuerySet.__repr__
 REPR_OUTPUT_SIZE = 20
 ITER_CHUNK_SIZE = 100
+
+logger = logging.getLogger(__name__)
 
 
 class QuerySet(BaseQuerySet):
@@ -29,12 +32,15 @@ class QuerySet(BaseQuerySet):
         If ``self._has_more`` the cursor hasn't been exhausted so cache then
         batch. Otherwise iterate the result_cache.
         """
+        logger.debug('QuerySet.__iter__()')
         self._iter = True
 
         if self._has_more:
+            logger.debug('Calling _iter_results()')
             return self._iter_results()
 
         # iterating over the cache.
+        logger.debug('Iterating over _result_cache')
         return iter(self._result_cache)
 
     def __len__(self):
@@ -70,6 +76,7 @@ class QuerySet(BaseQuerySet):
         yield. Raises StopIteration when there are no more results.
         """
         if self._result_cache is None:
+            logger.debug('Cache is None, setting it to []')
             self._result_cache = []
 
         pos = 0
@@ -101,6 +108,7 @@ class QuerySet(BaseQuerySet):
         Populates the result cache with ``ITER_CHUNK_SIZE`` more entries
         (until the cursor is exhausted).
         """
+        logger.debug('Populating cache...')
         if self._result_cache is None:
             self._result_cache = []
 

@@ -1,5 +1,6 @@
 import re
 import warnings
+import logging
 
 from bson.dbref import DBRef
 import pymongo
@@ -22,6 +23,8 @@ from mongoengine.queryset import (NotUniqueError, OperationError,
 __all__ = ('Document', 'EmbeddedDocument', 'DynamicDocument',
            'DynamicEmbeddedDocument', 'OperationError',
            'InvalidCollectionError', 'NotUniqueError', 'MapReduceDocument')
+
+logger = logging.getLogger(__name__)
 
 
 def includes_cls(fields):
@@ -171,34 +174,55 @@ class Document(BaseDocument):
         and doesn't have a PK yet, return the default object hash instead.
         """
         if self.pk is None:
-            return super(BaseDocument, self).__hash__()
+            result = super(BaseDocument, self).__hash__()
         else:
-            return hash(self.pk)
+            result = hash(self.pk)
+        logger.debug('Document.__hash__: {}'.format(result))
+        return result
 
     @classmethod
     def _get_db(cls):
         """Some Model using other db_alias"""
-        return get_db(cls._meta.get('db_alias', DEFAULT_CONNECTION_NAME))
+        result = get_db(cls._meta.get('db_alias', DEFAULT_CONNECTION_NAME))
+        logger.debug('Document._get_db(): {}'.format(result))
+        return result
 
     @classmethod
     def _get_collection(cls):
         """Return a PyMongo collection for the document."""
-        if not hasattr(cls, '_collection') or cls._collection is None:
+        logger.debug('Entering Document._get_collection()')
+        if not hasattr(cls._local_storage, '_collection') \
+                or cls._local_storage._collection is None:
+            logger.debug('No cached _collection found, re-computing')
 
             # Get the collection, either capped or regular.
             if cls._meta.get('max_size') or cls._meta.get('max_documents'):
-                cls._collection = cls._get_capped_collection()
+                cls._local_storage._collection = cls._get_capped_collection()
             else:
                 db = cls._get_db()
                 collection_name = cls._get_collection_name()
-                cls._collection = db[collection_name]
+                cls._local_storage._collection = db[collection_name]
 
             # Ensure indexes on the collection unless auto_create_index was
             # set to False.
             if cls._meta.get('auto_create_index', True):
                 cls.ensure_indexes()
 
-        return cls._collection
+        logger.debug(
+            'Document._get_collection(): {}'.format(cls._local_storage._collection)
+        )
+        return cls._local_storage._collection
+
+    @property
+    def _collection(self):
+        result = getattr(self._local_storage, '_collection', None)
+        logger.debug('Getting Document._collection: {}'.format(result))
+        return result
+
+    @_collection.setter
+    def _collection(self, value):
+        logger.debug('Settings Document._collection to: {}'.format(value))
+        self._local_storage._collection = value
 
     @classmethod
     def _get_capped_collection(cls):
@@ -227,7 +251,8 @@ class Document(BaseDocument):
             ):
                 raise InvalidCollectionError(
                     'Cannot create collection "{}" as a capped '
-                    'collection as it already exists'.format(cls._collection)
+                    'collection as it already exists'.format(
+                        cls._local_storage._collection)
                 )
 
             return collection
@@ -270,7 +295,8 @@ class Document(BaseDocument):
             query = {}
 
         if self.pk is None:
-            raise InvalidDocumentError('The document does not have a primary key.')
+            raise InvalidDocumentError(
+                'The document does not have a primary key.')
 
         id_field = self._meta['id_field']
         query = query.copy() if isinstance(query, dict) else query.to_query(self)
@@ -278,7 +304,8 @@ class Document(BaseDocument):
         if id_field not in query:
             query[id_field] = self.pk
         elif query[id_field] != self.pk:
-            raise InvalidQueryError('Invalid document modify query: it must modify only this document.')
+            raise InvalidQueryError(
+                'Invalid document modify query: it must modify only this document.')
 
         updated = self._qs(**query).modify(new=True, **update)
         if updated is None:
@@ -433,7 +460,8 @@ class Document(BaseDocument):
         # but they forget to return the _id value passed back, therefore getting it back here
         # Correct behaviour in 2.X and in 3.0.1+ versions
         if not object_id and pymongo.version_tuple == (3, 0):
-            pk_as_mongo_obj = self._fields.get(self._meta['id_field']).to_mongo(self.pk)
+            pk_as_mongo_obj = self._fields.get(
+                self._meta['id_field']).to_mongo(self.pk)
             object_id = (
                 self._qs.filter(pk=pk_as_mongo_obj).first() and
                 self._qs.filter(pk=pk_as_mongo_obj).first().pk
@@ -603,7 +631,8 @@ class Document(BaseDocument):
         except pymongo.errors.OperationFailure as err:
             message = u'Could not delete document (%s)' % err.message
             raise OperationError(message)
-        signals.post_delete.send(self.__class__, document=self, **signal_kwargs)
+        signals.post_delete.send(
+            self.__class__, document=self, **signal_kwargs)
 
     def switch_db(self, db_alias, keep_created=True):
         """
@@ -711,7 +740,8 @@ class Document(BaseDocument):
                     try:
                         # If field is a special field, e.g. items is stored as _reserved_items,
                         # an KeyError is thrown. So try to retrieve the field from _data
-                        setattr(self, field, self._reload(field, obj._data.get(field)))
+                        setattr(self, field, self._reload(
+                            field, obj._data.get(field)))
                     except KeyError:
                         # If field is removed from the database while the object
                         # is in memory, a reload would cause a KeyError
@@ -876,7 +906,8 @@ class Document(BaseDocument):
                     del opts['cls']
 
                 if IS_PYMONGO_3:
-                    collection.create_index(fields, background=background, **opts)
+                    collection.create_index(
+                        fields, background=background, **opts)
                 else:
                     collection.ensure_index(fields, background=background,
                                             drop_dups=drop_dups, **opts)

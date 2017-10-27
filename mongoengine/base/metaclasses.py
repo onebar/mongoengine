@@ -1,4 +1,5 @@
 import warnings
+from threading import local
 
 import six
 
@@ -29,6 +30,7 @@ class DocumentMetaclass(type):
 
         attrs['_is_document'] = attrs.get('_is_document', False)
         attrs['_cached_reference_fields'] = []
+        attrs['_local_storage'] = local()
 
         # EmbeddedDocuments could have meta data for inheritance
         if 'meta' in attrs:
@@ -44,7 +46,8 @@ class DocumentMetaclass(type):
                 elif hasattr(base, '_meta'):
                     meta.merge(base._meta)
             attrs['_meta'] = meta
-            attrs['_meta']['abstract'] = False  # 789: EmbeddedDocument shouldn't inherit abstract
+            # 789: EmbeddedDocument shouldn't inherit abstract
+            attrs['_meta']['abstract'] = False
 
         # If allow_inheritance is True, add a "_cls" string field to the attrs
         if attrs['_meta'].get('allow_inheritance'):
@@ -438,6 +441,25 @@ class MetaDict(dict):
     Handles the merging of set indexes
     """
     _merge_options = ('indexes',)
+    _local_storage = local()
+
+    def __getitem__(self, key):
+        if key == 'db_alias':
+            return self._local_storage.db_alias
+        else:
+            return super().__getitem__(key)
+
+    def __setitem__(self, key, value):
+        if key == 'db_alias':
+            self._local_storage.db_alias = value
+        else:
+            return super().__setitem__(key, value)
+
+    def get(self, key, default=None):
+        if key == 'db_alias':
+            return getattr(self._local_storage, 'db_alias', default)
+        else:
+            return super().get(key, default)
 
     def merge(self, new_options):
         for k, v in new_options.iteritems():
