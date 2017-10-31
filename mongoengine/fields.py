@@ -6,6 +6,7 @@ import socket
 import time
 import uuid
 import warnings
+from threading import local
 from operator import itemgetter
 
 from bson import Binary, DBRef, ObjectId, SON
@@ -1407,6 +1408,7 @@ class GridFSProxy(object):
     """
 
     _fs = None
+    _local = local()
 
     def __init__(self, grid_id=None, key=None,
                  instance=None,
@@ -1415,10 +1417,21 @@ class GridFSProxy(object):
         self.grid_id = grid_id  # Store GridFS id for file
         self.key = key
         self.instance = instance
-        self.db_alias = db_alias
+        self.db_alias = self.get_db_alias()
         self.collection_name = collection_name
         self.newfile = None  # Used for partial writes
         self.gridout = None
+
+    @classmethod
+    def get_db_alias(cls):
+        try:
+            return cls._local.db_alias
+        except AttributeError:
+            return DEFAULT_CONNECTION_NAME
+
+    @classmethod
+    def set_db_alias(cls, db_alias):
+        cls._local.db_alias = db_alias
 
     def __getattr__(self, name):
         attrs = ('_fs', 'grid_id', 'key', 'instance', 'db_alias',
